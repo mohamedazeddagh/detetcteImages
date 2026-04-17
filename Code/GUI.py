@@ -98,7 +98,7 @@ class ConfidenceBar(tk.Canvas):
 
 # ─────────────────────────────────────────────────────────────────────────────
 class GalleryWindow:
-    """Pop-up gallery showing all saved category images."""
+    """Pop-up gallery with click-to-select, delete and move-category actions."""
 
     THUMB = 90
 
@@ -106,29 +106,29 @@ class GalleryWindow:
         self.win = tk.Toplevel(parent)
         self.win.title("CATEGORY GALLERY")
         self.win.configure(bg=BG_DEEP)
-        self.win.geometry("960x680")
+        self.win.geometry("980x700")
         self.win.resizable(True, True)
-        self._thumb_refs = []
+        self._thumb_refs  = []   # keep PhotoImage alive
+        self._selected    = None  # currently selected fpath
+        self._selected_cell = None  # the Frame widget of selected thumb
         self._build()
 
+    # ── Build skeleton ────────────────────────────────────────────────────────
     def _build(self):
         win = self.win
 
-        # Header
+        # ── Top header ──
         hdr = tk.Frame(win, bg=BG_DEEP)
-        hdr.pack(fill="x", padx=20, pady=(16, 0))
+        hdr.pack(fill="x", padx=20, pady=(14, 0))
+
         tk.Label(hdr, text="◈ CATEGORY GALLERY",
                  font=("Courier New", 18, "bold"),
                  bg=BG_DEEP, fg=ACCENT_CYAN).pack(side="left")
 
-        total = sum(
-            len([f for f in os.listdir(os.path.join(SAVE_DIR, c))
-                 if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))])
-            for c in CLASSES
-            if os.path.isdir(os.path.join(SAVE_DIR, c))
-        )
-        tk.Label(hdr, text=f"  {total} image(s) saved",
-                 font=FONT_MONO_SM, bg=BG_DEEP, fg=TEXT_MID).pack(side="left", padx=12)
+        self._total_lbl = tk.Label(hdr, text="", font=FONT_MONO_SM,
+                                   bg=BG_DEEP, fg=TEXT_MID)
+        self._total_lbl.pack(side="left", padx=12)
+        self._refresh_total()
 
         tk.Button(hdr, text="✕  CLOSE", command=self.win.destroy,
                   font=FONT_BTN, bg=BG_CARD, fg=ACCENT_PINK,
@@ -137,35 +137,78 @@ class GalleryWindow:
                   highlightthickness=1, highlightbackground=ACCENT_PINK
                   ).pack(side="right")
 
-        sep = tk.Canvas(win, bg=BG_DEEP, highlightthickness=0, height=1)
-        sep.pack(fill="x", padx=20, pady=8)
-        sep.create_line(0, 0, 960, 0, fill=BORDER)
+        # ── Action bar (shown always, buttons enabled on selection) ──
+        act = tk.Frame(win, bg=BG_PANEL)
+        act.pack(fill="x", padx=20, pady=6)
 
-        # Scrollable canvas
+        tk.Label(act, text="SELECTED:", font=FONT_MONO_SM,
+                 bg=BG_PANEL, fg=TEXT_DIM).pack(side="left", padx=(8, 4))
+
+        self._sel_lbl = tk.Label(act, text="— none —", font=FONT_MONO_SM,
+                                 bg=BG_PANEL, fg=TEXT_MID, width=36, anchor="w")
+        self._sel_lbl.pack(side="left")
+
+        self._del_btn = tk.Button(act, text="🗑  DELETE",
+                                  command=self._delete_selected,
+                                  font=FONT_BTN, bg=BG_CARD, fg=ACCENT_PINK,
+                                  activebackground=BORDER, activeforeground=ACCENT_PINK,
+                                  relief="flat", cursor="hand2", bd=0,
+                                  highlightthickness=1, highlightbackground=ACCENT_PINK,
+                                  state="disabled")
+        self._del_btn.pack(side="right", padx=(4, 8))
+
+        self._mov_btn = tk.Button(act, text="↪  MOVE TO CATEGORY",
+                                  command=self._move_selected,
+                                  font=FONT_BTN, bg=BG_CARD, fg=ACCENT_YELLOW,
+                                  activebackground=BORDER, activeforeground=ACCENT_YELLOW,
+                                  relief="flat", cursor="hand2", bd=0,
+                                  highlightthickness=1, highlightbackground=ACCENT_YELLOW,
+                                  state="disabled")
+        self._mov_btn.pack(side="right", padx=4)
+
+        sep = tk.Canvas(win, bg=BG_DEEP, highlightthickness=0, height=1)
+        sep.pack(fill="x", padx=20, pady=4)
+        sep.create_line(0, 0, 980, 0, fill=BORDER)
+
+        # ── Scrollable body ──
         container = tk.Frame(win, bg=BG_DEEP)
         container.pack(fill="both", expand=True, padx=10, pady=4)
 
-        canvas    = tk.Canvas(container, bg=BG_DEEP, highlightthickness=0)
-        scrollbar = tk.Scrollbar(container, orient="vertical",
-                                 command=canvas.yview, bg=BG_PANEL)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        self._canvas = tk.Canvas(container, bg=BG_DEEP, highlightthickness=0)
+        scrollbar    = tk.Scrollbar(container, orient="vertical",
+                                    command=self._canvas.yview, bg=BG_PANEL)
+        self._canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+        self._canvas.pack(side="left", fill="both", expand=True)
 
-        inner    = tk.Frame(canvas, bg=BG_DEEP)
-        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        self._inner    = tk.Frame(self._canvas, bg=BG_DEEP)
+        self._inner_id = self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
 
-        def _on_configure(e):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-        inner.bind("<Configure>", _on_configure)
-        canvas.bind("<Configure>",
-                    lambda e: canvas.itemconfig(inner_id, width=canvas.winfo_width()))
+        self._inner.bind("<Configure>",
+                         lambda e: self._canvas.configure(
+                             scrollregion=self._canvas.bbox("all")))
+        self._canvas.bind("<Configure>",
+                          lambda e: self._canvas.itemconfig(
+                              self._inner_id, width=self._canvas.winfo_width()))
 
-        def _on_wheel(e):
-            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_wheel)
+        self._canvas.bind_all("<MouseWheel>",
+                              lambda e: self._canvas.yview_scroll(
+                                  int(-1 * (e.delta / 120)), "units"))
 
-        # Populate categories
+        self._populate()
+
+    # ── Populate / refresh ────────────────────────────────────────────────────
+    def _populate(self):
+        """Clear and redraw all category sections."""
+        for w in self._inner.winfo_children():
+            w.destroy()
+        self._thumb_refs.clear()
+        self._selected      = None
+        self._selected_cell = None
+        self._sel_lbl.config(text="— none —")
+        self._del_btn.config(state="disabled")
+        self._mov_btn.config(state="disabled")
+
         for cls in CLASSES:
             folder = os.path.join(SAVE_DIR, cls)
             files  = sorted([
@@ -173,65 +216,177 @@ class GalleryWindow:
                 if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))
             ]) if os.path.isdir(folder) else []
 
-            cat_row = tk.Frame(inner, bg=BG_DEEP)
+            # Category header row
+            cat_row = tk.Frame(self._inner, bg=BG_DEEP)
             cat_row.pack(fill="x", padx=8, pady=(14, 4))
             icon        = CLASS_ICONS.get(cls, "?")
             count_color = ACCENT_CYAN if files else TEXT_DIM
-            tk.Label(cat_row,
-                     text=f"{icon}  {cls.upper()}",
+            tk.Label(cat_row, text=f"{icon}  {cls.upper()}",
                      font=("Courier New", 13, "bold"),
                      bg=BG_DEEP, fg=count_color).pack(side="left")
-            tk.Label(cat_row,
-                     text=f"  [{len(files)} image(s)]",
-                     font=FONT_MONO_SM,
-                     bg=BG_DEEP, fg=TEXT_DIM).pack(side="left")
+            tk.Label(cat_row, text=f"  [{len(files)} image(s)]",
+                     font=FONT_MONO_SM, bg=BG_DEEP, fg=TEXT_DIM).pack(side="left")
 
-            div = tk.Canvas(inner, bg=BG_DEEP, highlightthickness=0, height=1)
+            div = tk.Canvas(self._inner, bg=BG_DEEP, highlightthickness=0, height=1)
             div.pack(fill="x", padx=8, pady=(0, 6))
             div.bind("<Configure>",
                      lambda e, d=div: d.create_line(0, 0, e.width, 0, fill=BORDER))
 
             if not files:
-                tk.Label(inner, text="  — no images saved yet —",
+                tk.Label(self._inner, text="  — no images saved yet —",
                          font=FONT_MONO_SM, bg=BG_DEEP, fg=TEXT_DIM
                          ).pack(anchor="w", padx=20, pady=4)
                 continue
 
-            # Thumbnail grid — wrap every 9
-            grid_frame = tk.Frame(inner, bg=BG_DEEP)
+            grid_frame = tk.Frame(self._inner, bg=BG_DEEP)
             grid_frame.pack(fill="x", padx=16, pady=(0, 4))
             for idx, fname in enumerate(files):
                 fpath = os.path.join(folder, fname)
                 self._add_thumb(grid_frame, fpath, fname, idx // 9, idx % 9)
 
+        self._refresh_total()
+
+    def _refresh_total(self):
+        total = sum(
+            len([f for f in os.listdir(os.path.join(SAVE_DIR, c))
+                 if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))])
+            for c in CLASSES
+            if os.path.isdir(os.path.join(SAVE_DIR, c))
+        )
+        self._total_lbl.config(text=f"  {total} image(s) saved")
+
+    # ── Thumbnail ─────────────────────────────────────────────────────────────
     def _add_thumb(self, parent, fpath, fname, row, col):
         T    = self.THUMB
         cell = tk.Frame(parent, bg=BG_CARD,
-                        highlightthickness=1, highlightbackground=BORDER)
+                        highlightthickness=2, highlightbackground=BORDER)
         cell.grid(row=row, column=col, padx=4, pady=4, sticky="n")
 
         try:
             img = Image.open(fpath).convert("RGB")
             img.thumbnail((T, T), Image.LANCZOS)
             square = Image.new("RGB", (T, T), (17, 24, 39))
-            ox = (T - img.width) // 2
-            oy = (T - img.height) // 2
-            square.paste(img, (ox, oy))
+            square.paste(img, ((T - img.width) // 2, (T - img.height) // 2))
             photo = ImageTk.PhotoImage(square)
             self._thumb_refs.append(photo)
 
             lbl = tk.Label(cell, image=photo, bg=BG_CARD, cursor="hand2")
             lbl.pack()
-            lbl.bind("<Button-1>", lambda e, p=fpath: self._enlarge(p))
+            # Single click → select; double-click → preview
+            lbl.bind("<Button-1>",
+                     lambda e, p=fpath, c=cell: self._select(p, c))
+            lbl.bind("<Double-Button-1>",
+                     lambda e, p=fpath: self._preview(p))
         except Exception:
             tk.Label(cell, text="ERR", width=8, height=4,
                      bg=BG_CARD, fg=ACCENT_PINK, font=FONT_MONO_SM).pack()
 
         short = (fname[:10] + "…") if len(fname) > 12 else fname
-        tk.Label(cell, text=short, font=("Courier New", 7),
-                 bg=BG_CARD, fg=TEXT_DIM).pack(pady=(0, 3))
+        name_lbl = tk.Label(cell, text=short, font=("Courier New", 7),
+                             bg=BG_CARD, fg=TEXT_DIM)
+        name_lbl.pack(pady=(0, 3))
+        name_lbl.bind("<Button-1>",
+                      lambda e, p=fpath, c=cell: self._select(p, c))
 
-    def _enlarge(self, fpath):
+    # ── Selection ─────────────────────────────────────────────────────────────
+    def _select(self, fpath, cell):
+        # Deselect previous
+        if self._selected_cell:
+            try:
+                self._selected_cell.config(highlightbackground=BORDER,
+                                           highlightthickness=2)
+            except tk.TclError:
+                pass
+
+        if self._selected == fpath:
+            # Click same → deselect
+            self._selected      = None
+            self._selected_cell = None
+            self._sel_lbl.config(text="— none —", fg=TEXT_MID)
+            self._del_btn.config(state="disabled")
+            self._mov_btn.config(state="disabled")
+        else:
+            self._selected      = fpath
+            self._selected_cell = cell
+            cell.config(highlightbackground=ACCENT_CYAN, highlightthickness=2)
+            self._sel_lbl.config(text=os.path.basename(fpath)[:44], fg=ACCENT_CYAN)
+            self._del_btn.config(state="normal")
+            self._mov_btn.config(state="normal")
+
+    # ── Delete ────────────────────────────────────────────────────────────────
+    def _delete_selected(self):
+        if not self._selected:
+            return
+        fname = os.path.basename(self._selected)
+        if not messagebox.askyesno("Confirm Delete",
+                                   f"Permanently delete this image?\n\n{fname}",
+                                   parent=self.win):
+            return
+        try:
+            os.remove(self._selected)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self.win)
+            return
+        self._populate()
+
+    # ── Move to category ──────────────────────────────────────────────────────
+    def _move_selected(self):
+        if not self._selected:
+            return
+
+        src      = self._selected
+        cur_cat  = os.path.basename(os.path.dirname(src))
+
+        picker = tk.Toplevel(self.win)
+        picker.title("Move to Category")
+        picker.configure(bg=BG_DEEP)
+        picker.resizable(False, False)
+        picker.geometry("300x430")
+        picker.grab_set()
+
+        tk.Label(picker, text="MOVE TO CATEGORY",
+                 font=("Courier New", 11, "bold"),
+                 bg=BG_DEEP, fg=ACCENT_YELLOW).pack(pady=(18, 4))
+        tk.Label(picker, text=f"From: {CLASS_ICONS.get(cur_cat,'')} {cur_cat}",
+                 font=FONT_MONO_SM, bg=BG_DEEP, fg=TEXT_MID).pack(pady=(0, 10))
+
+        for cls in CLASSES:
+            if cls == cur_cat:
+                continue   # skip current category
+            icon = CLASS_ICONS.get(cls, "?")
+            tk.Button(picker, text=f"{icon}  {cls}",
+                      command=lambda c=cls: self._do_move(src, c, picker),
+                      font=FONT_BTN, bg=BG_CARD, fg=ACCENT_CYAN,
+                      activebackground=BORDER, activeforeground=ACCENT_CYAN,
+                      relief="flat", cursor="hand2", bd=0,
+                      highlightthickness=1, highlightbackground=BORDER,
+                      width=24).pack(pady=2)
+
+        tk.Button(picker, text="✕  CANCEL", command=picker.destroy,
+                  font=FONT_BTN, bg=BG_CARD, fg=ACCENT_PINK,
+                  relief="flat", cursor="hand2", bd=0,
+                  highlightthickness=1, highlightbackground=ACCENT_PINK
+                  ).pack(pady=(10, 0))
+
+    def _do_move(self, src, new_cat, picker):
+        picker.destroy()
+        dest_dir = os.path.join(SAVE_DIR, new_cat)
+        os.makedirs(dest_dir, exist_ok=True)
+        fname    = os.path.basename(src)
+        dest     = os.path.join(dest_dir, fname)
+        # Avoid overwrite collision
+        if os.path.exists(dest):
+            base, ext = os.path.splitext(fname)
+            dest = os.path.join(dest_dir, f"{base}_{int(time.time())}{ext}")
+        try:
+            shutil.move(src, dest)
+        except Exception as e:
+            messagebox.showerror("Error", str(e), parent=self.win)
+            return
+        self._populate()
+
+    # ── Full-size preview ─────────────────────────────────────────────────────
+    def _preview(self, fpath):
         top = tk.Toplevel(self.win)
         top.title(os.path.basename(fpath))
         top.configure(bg=BG_DEEP)
@@ -380,7 +535,7 @@ class App:
             if "CAMERA" in txt:
                 self.cam_btn = btn
 
-        # ── ROW 2: Add to Category / Visualiser / Auto-Save toggle ──
+        # ── ROW 2: Add to Category / Visualiser ──
         self.add_btn = tk.Button(root,
                                  text="＋  ADD TO CATEGORY",
                                  command=self.add_to_category,
@@ -553,13 +708,11 @@ class App:
     def toggle_autosave(self):
         self._autosave = not self._autosave
         if self._autosave:
-            self.autosave_btn.config(text="⏺  AUTO-SAVE: ON ",
-                                     fg=ACCENT_GREEN,
+            self.autosave_btn.config(text="⏺  AUTO-SAVE: ON ", fg=ACCENT_GREEN,
                                      highlightbackground=ACCENT_GREEN)
-            self._log("Auto-save ENABLED — saves every detection ≥60% confidence (max 1 per 3s).")
+            self._log("Auto-save ENABLED — camera will save every detected frame.")
         else:
-            self.autosave_btn.config(text="⏺  AUTO-SAVE: OFF",
-                                     fg=TEXT_DIM,
+            self.autosave_btn.config(text="⏺  AUTO-SAVE: OFF", fg=TEXT_DIM,
                                      highlightbackground=BORDER)
             self._log("Auto-save DISABLED.")
 
@@ -595,7 +748,7 @@ class App:
         last_pred_time = 0
         last_save_time = 0
         PRED_INTERVAL  = 0.5   # predict every 0.5s
-        SAVE_INTERVAL  = 3.0   # auto-save at most once every 3s
+        SAVE_INTERVAL  = 3.0   # auto-save at most once every 3s per category
         label, conf    = None, None
 
         while self._cam_running:
@@ -617,7 +770,7 @@ class App:
                 label  = CLASSES[idx]
                 last_pred_time = now
 
-                # ── Auto-save if enabled, confidence ≥ 60%, cooldown elapsed ──
+                # ── Auto-save if enabled and confidence is high enough ──
                 if self._autosave and conf >= 60 and (now - last_save_time) >= SAVE_INTERVAL:
                     save_frame = pil_frame.copy()
                     save_label = label
@@ -633,13 +786,14 @@ class App:
 
             if label:
                 draw = ImageDraw.Draw(pil_frame)
+                # Overlay bar
                 draw.rectangle([0, 0, pil_frame.width, 40], fill=(0, 0, 0))
                 draw.text((10, 8),
                           f"{CLASS_ICONS.get(label, '?')} {label}  {conf}%",
                           fill=(0, 229, 255))
-                # Green dot = auto-save active & confident, grey = not
+                # Show auto-save indicator
                 if self._autosave:
-                    dot_color = (0, 255, 159) if conf >= 60 else (60, 60, 60)
+                    dot_color = (0, 255, 159) if conf >= 60 else (100, 100, 100)
                     draw.ellipse([pil_frame.width - 22, 12,
                                   pil_frame.width - 10, 24], fill=dot_color)
 
@@ -647,7 +801,7 @@ class App:
             time.sleep(0.03)
 
     def _autosave_frame(self, pil_img, category):
-        """Save a raw camera frame to its category folder (background thread)."""
+        """Save a camera frame to the correct category folder (runs in thread)."""
         dest_dir = os.path.join(SAVE_DIR, category)
         os.makedirs(dest_dir, exist_ok=True)
         ts   = time.strftime("%Y%m%d_%H%M%S")
